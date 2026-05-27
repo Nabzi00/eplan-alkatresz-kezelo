@@ -128,7 +128,7 @@ with col2:
         raktar_date = get_excel_modified_date(raktar_file)
         raktar_ph.markdown(f"""
             <div style='display: flex; justify-content: space-between; align-items: center; padding-bottom: 5px;'>
-                <span style='font-size: 14px;'>2. Raktárkészlet Excel feltöltése (Opcionális)</span>
+                <span style='font-size: 14px;'>2. DM aktuális készlet Excel</span>
                 <span style='color: #888; font-size: 12px;'>🕒 <b>Utolsó mentés:</b> {raktar_date}</span>
             </div>
         """, unsafe_allow_html=True)
