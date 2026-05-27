@@ -1,9 +1,26 @@
 import streamlit as st
 import pandas as pd
 import io
+import openpyxl
 
 # Oldal beállításai
 st.set_page_config(page_title="EPLAN Alkatrészlista Kezelő", layout="wide")
+
+# --- SEGÉDFÜGGVÉNY A DÁTUM KINYERÉSÉHEZ ---
+def get_excel_modified_date(uploaded_file):
+    try:
+        # Kiolvassuk az Excel belső metaadatait
+        uploaded_file.seek(0)
+        wb = openpyxl.load_workbook(uploaded_file, read_only=True)
+        mod_time = wb.properties.modified
+        uploaded_file.seek(0) # Visszaállítjuk a fájlmutatót az elejére a Pandas számára
+        
+        if mod_time:
+            return mod_time.strftime("%Y. %m. %d. %H:%M")
+        return "Ismeretlen dátum"
+    except Exception:
+        uploaded_file.seek(0)
+        return "Ismeretlen dátum"
 
 # --- DINAMIKUS FEJLÉC (Cím és Projekt infó) ---
 header_container = st.container()
@@ -62,9 +79,15 @@ col1, col2 = st.columns(2)
 
 with col1:
     eplan_file = st.file_uploader("1. EPLAN Excel feltöltése", type=["xlsx"])
+    if eplan_file is not None:
+        eplan_date = get_excel_modified_date(eplan_file)
+        st.caption(f"🕒 **EPLAN fájl utolsó mentése:** {eplan_date}")
     
 with col2:
     raktar_file = st.file_uploader("2. Raktárkészlet Excel feltöltése (Opcionális)", type=["xlsx"])
+    if raktar_file is not None:
+        raktar_date = get_excel_modified_date(raktar_file)
+        st.caption(f"🕒 **Raktár fájl utolsó mentése:** {raktar_date}")
 
 # --- ADATFELDOLGOZÁS ---
 if eplan_file is not None:
@@ -75,20 +98,14 @@ if eplan_file is not None:
         nyers_projekt = str(df_eplan_raw.iloc[0, 1]).strip() if pd.notna(df_eplan_raw.iloc[0, 1]) else "Nincs megadva"
         
         if nyers_projekt != "Nincs megadva":
-            # 1. Levágjuk az utolsó 5 karaktert
             projekt_szam = nyers_projekt[:-5] if len(nyers_projekt) > 5 else nyers_projekt
-            
-            # 2. LECSERÉLJÜK az 5. (index 4) és a 12. (index 11) karaktert
             if len(projekt_szam) > 11:
-                # [0-tól 3-ig] + '/' + [5-től 10-ig] + '-' + [12-től a végéig]
                 projekt_szam = projekt_szam[:4] + '/' + projekt_szam[5:11] + '-' + projekt_szam[12:]
             elif len(projekt_szam) > 4:
-                # Ha rövidebb, mint 12, de hosszabb, mint 4
                 projekt_szam = projekt_szam[:4] + '/' + projekt_szam[5:]
         else:
             projekt_szam = "Nincs megadva"
             
-        # Állomás kinyerése
         allomas_szam = str(df_eplan_raw.iloc[1, 1]).strip() if pd.notna(df_eplan_raw.iloc[1, 1]) else "Nincs megadva"
         
         info_placeholder.markdown(
