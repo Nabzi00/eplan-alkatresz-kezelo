@@ -133,7 +133,7 @@ with col2:
             </div>
         """, unsafe_allow_html=True)
     else:
-        raktar_ph.markdown("<div style='font-size: 14px; padding-bottom: 5px;'>2. Raktárkészlet Excel feltöltése (Opcionális)</div>", unsafe_allow_html=True)
+        raktar_ph.markdown("<div style='font-size: 14px; padding-bottom: 5px;'>2. DM aktuális készlet Excel (Opcionális)</div>", unsafe_allow_html=True)
 
 # --- ADATFELDOLGOZÁS ---
 if eplan_file is not None:
