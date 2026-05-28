@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import openpyxl
-import streamlit as st
-import json # Új import
+import json
 
 # Oldal beállításai
 st.set_page_config(page_title="EPLAN Alkatrészlista Kezelő", layout="wide")
@@ -33,10 +32,7 @@ with header_container:
     with col_info:
         info_placeholder = st.empty()
 
-import streamlit as st
-import json # Új import
-
-# --- TO-DO LISTA RÉSZ (Szerkeszthető verzió) ---
+# --- TO-DO LISTA RÉSZ (Szerkeszthető verzió + TXT letöltés) ---
 if 'todo_list' not in st.session_state:
     saved_todo = st.query_params.get("todo_data", None)
     if saved_todo:
@@ -92,6 +88,16 @@ with st.expander("📝 Napi Teendők (To-Do lista)", expanded=False):
                         st.session_state.todo_list.pop(i)
                         save_todo()
                         st.rerun()
+
+        # ÚJ FUNKCIÓ: Teendők letöltése TXT-be
+        st.write("---")
+        todo_text = "\n".join(st.session_state.todo_list)
+        st.download_button(
+            label="📥 Teendők mentése TXT-be",
+            data=todo_text,
+            file_name="teendok.txt",
+            mime="text/plain"
+        )
 st.divider()
 
 # --- SEGÉDFÜGGVÉNY AZ OSZLOPOK BIZTONSÁGOS KIOLVASÁSÁHOZ ---
@@ -107,7 +113,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     eplan_ph = st.empty()
-    eplan_file = st.file_uploader("eplan_upload", type=["xlsx"], label_visibility="collapsed")
+    eplan_file = st.file_uploader("eplan_upload", type=["xlsx", "xls"], label_visibility="collapsed")
     
     if eplan_file is not None:
         eplan_date = get_excel_modified_date(eplan_file)
@@ -122,20 +128,24 @@ with col1:
     
 with col2:
     raktar_ph = st.empty()
-    raktar_file = st.file_uploader("raktar_upload", type=["xlsx"], label_visibility="collapsed")
+    raktar_file = st.file_uploader("raktar_upload", type=["xlsx", "xls"], label_visibility="collapsed")
     
     if raktar_file is not None:
         raktar_date = get_excel_modified_date(raktar_file)
         raktar_ph.markdown(f"""
             <div style='display: flex; justify-content: space-between; align-items: center; padding-bottom: 5px;'>
-                <span style='font-size: 14px;'>2. DM aktuális készlet Excel</span>
+                <span style='font-size: 14px;'>2. DM aktuális készlet</span>
                 <span style='color: #888; font-size: 12px;'>🕒 <b>Utolsó mentés:</b> {raktar_date}</span>
             </div>
         """, unsafe_allow_html=True)
     else:
-        raktar_ph.markdown("<div style='font-size: 14px; padding-bottom: 5px;'>2. DM aktuális készlet Excel (Opcionális)</div>", unsafe_allow_html=True)
+        raktar_ph.markdown("<div style='font-size: 14px; padding-bottom: 5px;'>2. DM aktuális készlet (Opcionális)</div>", unsafe_allow_html=True)
 
 # --- ADATFELDOLGOZÁS ---
+# Projektváltozók előkészítése (hogy az exportnál is meglegyenek)
+projekt_szam = "Nincs megadva"
+allomas_szam = "Nincs megadva"
+
 if eplan_file is not None:
     try:
         # ELLENŐRIZZÜK, HOGY EZ EGY FOLYTATANDÓ (KORÁBBAN KIMENTETT) FÁJL-E
@@ -170,9 +180,7 @@ if eplan_file is not None:
                     projekt_szam = projekt_szam[:4] + '/' + projekt_szam[5:11] + '-' + projekt_szam[12:]
                 elif len(projekt_szam) > 4:
                     projekt_szam = projekt_szam[:4] + '/' + projekt_szam[5:]
-            else:
-                projekt_szam = "Nincs megadva"
-                
+            
             allomas_szam = str(df_eplan_raw.iloc[1, 1]).strip() if pd.notna(df_eplan_raw.iloc[1, 1]) else "Nincs megadva"
             
             info_placeholder.markdown(
@@ -216,44 +224,121 @@ if eplan_file is not None:
         st.error(f"❌ Hiba az EPLAN fájl beolvasásakor! Kérlek ellenőrizd a fájlt. Részletek: {e}")
         st.stop()
     
-    # --- RAKTÁRI ÖSSZEVETÉS (Csak ha töltöttek fel Raktár fájlt) ---
+  # --- RAKTÁRI ÖSSZEVETÉS ---
     if raktar_file is not None:
         try:
-            df_raktar = pd.read_excel(raktar_file)
+            # 1. Beolvassuk "nyersen"
+            df_raktar_raw = pd.read_excel(raktar_file, header=None)
             
-            df_raktar.dropna(how='all', inplace=True)
-            df_raktar.dropna(how='all', axis=1, inplace=True)
-            df_raktar = df_raktar.reset_index(drop=True)
+            # 2. Kulcsszavak (Sarzs benne van!)
+            kulcsszavak = {
+                'cikkszam': ['cikkszám', 'típus', 'cikk', 'megrendelési szám', 'anyagszám', 'material', 'azonosító'],
+                'mennyiseg': ['mennyiség', 'készlet', 'db', 'stock', 'szabad', 'raktárkészlet', 'menny.'],
+                'hely': ['raktárhely', 'hely', 'fiók', 'polc', 'bin', 'storage', 'tárhely', 'sarzs']
+            }
             
-            raktar_a_series = get_column_safe(df_raktar, 0)
-            raktar_qty_series = get_column_safe(df_raktar, 1)
-            raktar_e_series = get_column_safe(df_raktar, 4)
-            raktar_f_hely_series = get_column_safe(df_raktar, 5)
+            fejlec_sor_idx = -1
+            c_idx, q_idx, h_idx = -1, -1, -1
+
+            # 3. Keresés az első 20 sorban
+            for row_idx, row in df_raktar_raw.head(20).iterrows():
+                temp_c, temp_q, temp_h = -1, -1, -1
+                for col_idx, cell_value in enumerate(row):
+                    cell_str = str(cell_value).lower().strip()
+                    if temp_c == -1 and any(k in cell_str for k in kulcsszavak['cikkszam']):
+                        temp_c = col_idx
+                    elif temp_q == -1 and any(k in cell_str for k in kulcsszavak['mennyiseg']):
+                        temp_q = col_idx
+                    elif temp_h == -1 and any(k in cell_str for k in kulcsszavak['hely']):
+                        temp_h = col_idx
+                        
+                if temp_c != -1 and temp_q != -1:
+                    fejlec_sor_idx = row_idx
+                    c_idx = temp_c
+                    q_idx = temp_q
+                    h_idx = temp_h
+                    break
             
-            df_raktar = df_raktar.fillna("")
-            
-            # Attól függően, hogy nyers vagy folytatott munkánk van, meg kell keresnünk a cikkszám oszlopokat
-            if 'is_resumed' in locals() and is_resumed:
-                # Kimentett fájl esetén a D és C oszlopok már máshol lehetnek a hozzáadott oszlopok miatt. 
-                # Ezért név alapján keressük meg a Cikkszám oszlopot. (Ideiglenesen feltételezzük, hogy a D oszlop neve "Cikkszám" vagy "Típus")
-                # Biztonságosabb megközelítés: végigiterálunk a feltételezett neveken
-                cikkszam_col = next((col for col in df_eplan.columns if 'cikkszám' in str(col).lower() or 'típus' in str(col).lower()), df_eplan.columns[3])
-                eplan_vegleges_cikkszam = df_eplan[cikkszam_col].astype(str).str.strip().replace(['nan', 'None', '', 'NaN'], "-")
+            # 4. Ha megvan a fejléc, kinyerjük az adatokat
+            if fejlec_sor_idx != -1:
+                # Biztosíték: ha nincs meg a Sarzs szó, kényszerítjük az A oszlopot (0)
+                if h_idx == -1:
+                    h_idx = 0 
                 
+                # --- HELYKÓD MÁSOLÓ ---
+                actual_helyek = df_raktar_raw.iloc[:, h_idx].astype(str).str.strip()
+                # Kiterjesztettük az üres cellák vizsgálatát
+                mask_empty = actual_helyek.str.lower().isin(['nan', 'none', 'null', '<na>', '', '0', '0.0'])
+                
+                if c_idx == h_idx:
+                    qty_col = df_raktar_raw.iloc[:, q_idx].astype(str).str.lower().str.strip()
+                    qty_empty = qty_col.isin(['nan', 'none', 'null', '<na>', '', '0', '0.0'])
+                    is_location = (~mask_empty) & qty_empty
+                    actual_helyek[~is_location] = None
+                else:
+                    actual_helyek[mask_empty] = None
+                
+                actual_helyek.iloc[fejlec_sor_idx] = None
+                actual_helyek = actual_helyek.ffill().fillna("Nincs megadva")
+                
+                df_raktar = df_raktar_raw.iloc[fejlec_sor_idx + 1:].reset_index(drop=True)
+                raktar_f_helyek = actual_helyek.iloc[fejlec_sor_idx + 1:].reset_index(drop=True)
+                
+                # --- CIKKSZÁM ÉS MENNYISÉG TISZTÍTÁS (Itt a .0 javítás!) ---
+                raktar_vegleges_cikkszam = df_raktar.iloc[:, c_idx].astype(str).str.strip()
+                # Eltávolítjuk a rejtett ".0" tizedeseket a végéről
+                raktar_vegleges_cikkszam = raktar_vegleges_cikkszam.str.replace(r'\.0$', '', regex=True)
+                raktar_vegleges_cikkszam = raktar_vegleges_cikkszam.replace(['nan', 'None', '', 'NaN', '<NA>'], "-")
+                
+                tiszta_raktar_qty = pd.to_numeric(df_raktar.iloc[:, q_idx].astype(str).str.replace(r'[^\d\.]', '', regex=True), errors='coerce').fillna(0)
+                
+                # --- TÖBB TÁRHELY ÖSSZEVONÁSA ---
+                df_raktar_clean = pd.DataFrame({
+                    'Cikkszám': raktar_vegleges_cikkszam,
+                    'Mennyiség': tiszta_raktar_qty,
+                    'Hely': raktar_f_helyek
+                })
+                df_raktar_clean = df_raktar_clean[df_raktar_clean['Cikkszám'] != "-"]
+                
+                df_shelf_totals = df_raktar_clean.groupby(['Cikkszám', 'Hely'], as_index=False)['Mennyiség'].sum()
+                
+                def format_shelf_qty(v):
+                    return str(int(v)) if v == int(v) else str(v)
+                df_shelf_totals['Hely_Kombinalt'] = df_shelf_totals['Hely'].astype(str) + " (" + df_shelf_totals['Mennyiség'].apply(format_shelf_qty) + " db)"
+                
+                aggregated_raktar = df_shelf_totals.groupby('Cikkszám').agg({
+                    'Mennyiség': 'sum',
+                    'Hely_Kombinalt': lambda x: ", ".join(x)
+                })
+                
+                raktar_hely_dict = aggregated_raktar['Hely_Kombinalt'].to_dict()
+                raktar_qty_dict = aggregated_raktar['Mennyiség'].to_dict()
+                
+                # --- 🛠️ DEBUG (Röntgen nézet) MEGJEELNÍTÉSE ---
+                with st.expander("🛠️ Fejlesztői Debug: Hogyan látja a program a raktári adatokat?", expanded=False):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.write(f"**Fejléc sor:** {fejlec_sor_idx}")
+                    c2.write(f"**Cikkszám oszlop:** {c_idx}")
+                    c3.write(f"**Mennyiség oszlop:** {q_idx}")
+                    c4.write(f"**Sarzs/Hely oszlop:** {h_idx}")
+                    st.write("---")
+                    st.write("**Első 15 feldolgozott (Cikkszám, Mennyiség, Kitalált Helykód):**")
+                    st.dataframe(df_raktar_clean.head(15), use_container_width=True)
+
+            else:
+                st.error("❌ Nem találtam Cikkszám és Mennyiség oszlopokat a raktári fájlban!")
+                st.stop()
+
+            # --- 5. EPLAN CIKKSZÁM PÁROSÍTÁS (.0 TISZTÍTÁSSAL EGYÜTT!) ---
+            if 'is_resumed' in locals() and is_resumed:
+                cikkszam_col = next((col for col in df_eplan.columns if 'cikkszám' in str(col).lower() or 'típus' in str(col).lower()), df_eplan.columns[3])
+                eplan_vegleges_cikkszam = df_eplan[cikkszam_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).replace(['nan', 'None', '', 'NaN'], "-")
                 qty_col = next((col for col in df_eplan.columns if 'mennyiség' in str(col).lower() or 'db' in str(col).lower()), df_eplan.columns[4])
                 tiszta_eplan_qty = pd.to_numeric(df_eplan[qty_col].astype(str).str.replace(r'[^\d\.]', '', regex=True), errors='coerce').fillna(0)
             else:
-                eplan_vegleges_cikkszam = eplan_d_series.fillna(eplan_c_series).fillna("-")
+                eplan_vegleges_cikkszam = eplan_d_series.fillna(eplan_c_series).astype(str).str.strip().str.replace(r'\.0$', '', regex=True).fillna("-")
                 tiszta_eplan_qty = pd.to_numeric(eplan_qty_series.astype(str).str.replace(r'[^\d\.]', '', regex=True), errors='coerce').fillna(0)
                 
-            raktar_vegleges_cikkszam = raktar_e_series.fillna(raktar_a_series).fillna("-")
-            raktar_f_helyek = raktar_f_hely_series.fillna("Nincs megadva")
-            tiszta_raktar_qty = pd.to_numeric(raktar_qty_series.astype(str).str.replace(r'[^\d\.]', '', regex=True), errors='coerce').fillna(0)
-            
-            valid_mask = raktar_vegleges_cikkszam != "-"
-            raktar_hely_dict = dict(zip(raktar_vegleges_cikkszam[valid_mask], raktar_f_helyek[valid_mask]))
-            raktar_qty_dict = dict(zip(raktar_vegleges_cikkszam[valid_mask], tiszta_raktar_qty[valid_mask]))
-            
             for col in ['Raktáron találva', 'Raktárhely', 'Raktári készlet']:
                 if col in df_eplan.columns:
                     df_eplan = df_eplan.drop(columns=[col])
@@ -264,23 +349,17 @@ if eplan_file is not None:
             def ertekel_mennyiseg(row, idx):
                 if row['Raktárhely'] == "-":
                     return "❌ Nem"
-                
                 e_qty = tiszta_eplan_qty.iloc[idx]
                 r_qty = row['Raktári készlet']
                 
-                if r_qty <= 0:
-                    return "❌ Nem"
-                elif r_qty >= e_qty:
-                    return "✅ Igen"
-                else:
-                    return "⚠️ Részleges"
+                if r_qty <= 0: return "❌ Nem"
+                elif r_qty >= e_qty: return "✅ Igen"
+                else: return "⚠️ Részleges"
             
             df_eplan['Raktáron találva'] = [ertekel_mennyiseg(row, idx) for idx, row in df_eplan.iterrows()]
             
-            # Csak akkor írjuk felül a státuszt, ha az "Kiválasztandó..." vagy ha mi futtatjuk először
             mask_igen = (df_eplan['Raktáron találva'] == "✅ Igen") & (df_eplan['Beszerzés státusza'] == "Kiválasztandó...")
             df_eplan.loc[mask_igen, "Beszerzés státusza"] = "Áttároltatható"
-            
             mask_nem = (df_eplan['Raktáron találva'].isin(["⚠️ Részleges", "❌ Nem"])) & (df_eplan['Beszerzés státusza'] == "Kiválasztandó...")
             df_eplan.loc[mask_nem, "Beszerzés státusza"] = "Rendelni"
             
@@ -291,11 +370,10 @@ if eplan_file is not None:
             df_eplan.insert(1, 'Raktárhely', col_hely)
             df_eplan.insert(2, 'Raktári készlet', col_keszlet)
             
-            st.success("✅ Raktárkészlet adatok sikeresen frissítve az aktuális lista alapján!")
+            st.success("✅ Raktárkészlet és Sarzs kódok sikeresen beolvasva és összevonva!")
                 
         except Exception as e:
-            st.error(f"❌ Hiba történt a Raktár Excel beolvasásakor! Részletek: {e}")
-
+            st.error(f"❌ Hiba történt a DM aktuális készlet beolvasásakor! Részletek: {e}")
     # --- TÖBBSZÖRÖS SZŰRŐ GOMBOK ---
     st.divider()
     st.subheader("📝 Adatok szerkesztése és szűrése")
@@ -350,7 +428,7 @@ if eplan_file is not None:
         num_rows="dynamic"
     )
 
-# --- EXPORTÁLÓ SZEKCIÓ ---
+    # --- EXPORTÁLÓ SZEKCIÓ ---
     st.divider()
     st.subheader("📥 Exportálás és Mentés")
     
@@ -370,18 +448,18 @@ if eplan_file is not None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
- # 2. GOMB: Csillagpont ajánlatkérő generálása
+    # ÚJ FUNKCIÓ: 2. GOMB (Csillagpont automata projekt + A/B felcserélve)
     with col_exp2:
         if st.button("📤 Csillagpont ajánlatkérő generálása"):
             try:
                 wb = openpyxl.load_workbook("sablon.xlsx")
                 ws = wb["VM_BOM"]
                 
-                # AUTOMATIKUS KITÖLTÉS (ezek a változók már léteznek a kódban feljebb)
+                # AUTOMATIKUS KITÖLTÉS (a nyers fájlból kinyert adatokkal)
                 ws["B1"] = projekt_szam
                 ws["B2"] = allomas_szam
                 
-                # Szűrés a 11. oszlop (FORGALMAZÓ) alapján
+                # Szűrés a FORGALMAZÓ alapján
                 csillagpont_df = edited_df[
                     edited_df["FORGALMAZÓ"].astype(str).str.contains("Csillagpont", case=False, na=False)
                 ]
@@ -391,9 +469,9 @@ if eplan_file is not None:
                 else:
                     # A 6. sortól kezdjük az adatírást
                     for r_idx, (index, row) in enumerate(csillagpont_df.iterrows(), start=6):
-                        # A6: Cikkszám
+                        # A6: Megnevezés (felcserélve az eredeti B-vel)
                         ws.cell(row=r_idx, column=1, value=row["MEGNEVEZÉS 1"])
-                        # B6: Megnevezés
+                        # B6: Cikkszám (felcserélve az eredeti A-val)
                         ws.cell(row=r_idx, column=2, value=row["MEGRENDELÉSI SZÁM"])
                         # C6: Mennyiség
                         ws.cell(row=r_idx, column=3, value=row["MENNYISÉG"])
