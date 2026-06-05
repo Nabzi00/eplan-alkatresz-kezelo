@@ -1,0 +1,14 @@
+{
+    "admin": {
+        "password": "Nemadmin",
+        "todo": [],
+        "archive": []
+    },
+    "custom_cards": {},
+    "custom_zones": [
+        "E-Bus Fő",
+        "Fő betáp (24V)",
+        "LI+3",
+        "LO+2"
+    ]
+}
